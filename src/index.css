@@ -1,0 +1,222 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;700;800&display=swap');
+
+:root {
+  /* Esports Neon Premium Dark Theme */
+  --bg-primary: #0D0D12;
+  --bg-secondary: #161823;
+  --bg-glass: rgba(22, 24, 35, 0.6);
+  --bg-card: #1E202C;
+
+  --text-primary: #FFFFFF;
+  --text-secondary: #A0A5B8;
+  --text-muted: #6B7280;
+
+  --accent-cyan: #00F0FF;
+  --accent-cyan-glow: rgba(0, 240, 255, 0.4);
+
+  --accent-crimson: #FF003C;
+  --accent-crimson-glow: rgba(255, 0, 60, 0.4);
+
+  --accent-purple: #9D4EDD;
+
+  --success: #10B981;
+  --warning: #F59E0B;
+
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-active: rgba(0, 240, 255, 0.3);
+
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-heading: 'Outfit', 'Inter', system-ui, sans-serif;
+
+  --shadow-neon: 0 0 15px var(--accent-cyan-glow);
+  --shadow-neon-crimson: 0 0 15px var(--accent-crimson-glow);
+  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* Glassmorphism Utilities */
+.glass-panel {
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-glass);
+}
+
+.glass-panel:hover {
+  border-color: var(--border-active);
+  transition: border-color 0.3s ease;
+}
+
+/* Typography */
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+h1 {
+  font-size: 2.5rem;
+}
+
+h2 {
+  font-size: 1.75rem;
+}
+
+/* Neon text & glows */
+.text-cyan {
+  color: var(--accent-cyan);
+}
+
+.text-crimson {
+  color: var(--accent-crimson);
+}
+
+.glow-text {
+  text-shadow: 0 0 10px var(--accent-cyan-glow);
+}
+
+.glow-text-crimson {
+  text-shadow: 0 0 10px var(--accent-crimson-glow);
+}
+
+/* Buttons */
+.btn-primary {
+  background: transparent;
+  color: var(--accent-cyan);
+  font-family: var(--font-heading);
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 12px 24px;
+  border: 1px solid var(--accent-cyan);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-primary:hover {
+  background: var(--accent-cyan);
+  color: var(--bg-primary);
+  box-shadow: var(--shadow-neon);
+}
+
+.btn-danger {
+  background: transparent;
+  color: var(--accent-crimson);
+  font-family: var(--font-heading);
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 12px 24px;
+  border: 1px solid var(--accent-crimson);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-danger:hover {
+  background: var(--accent-crimson);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-neon-crimson);
+}
+
+/* Layout */
+.app-container {
+  display: flex;
+  min-height: 100vh;
+}
+
+.main-content {
+  flex: 1;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-card);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-cyan);
+}
+
+/* iOS Safe Area Adjustments */
+body {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Tablet / iPad Responsiveness */
+@media (max-width: 1024px) {
+  .app-container {
+    flex-direction: column;
+  }
+  
+  .main-content {
+    padding: 1.5rem;
+    gap: 1.5rem;
+  }
+
+  h1 { font-size: 2rem; }
+  h2 { font-size: 1.5rem; }
+}
+
+@media (max-width: 768px) {
+  .main-content {
+    padding: 1rem;
+    gap: 1rem;
+  }
+  
+  .glass-panel {
+    padding: 1.5rem 1rem !important;
+  }
+  
+  .grid-2-col {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+.grid-2-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+}
