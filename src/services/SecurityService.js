@@ -1,122 +1,164 @@
-import { Device } from '@capacitor/device';
 import { Network } from '@capacitor/network';
 import { Capacitor } from '@capacitor/core';
 
-// This service acts as the bridge between our React frontend and Native iOS/Android plugins.
-// It strictly follows the "No-Ban" boundary: No memory access, no file system scanning of game folders.
-// Employs a 12-Layer advanced anti-cheat diagnostic architecture.
+/**
+ * SecurityService — device integrity signal collector for iOS / iPadOS.
+ *
+ * HONEST BOUNDARY (read this before trusting any value here):
+ *   Everything this service reports is a CLIENT-SIDE HINT. On a jailbroken device
+ *   an attacker can hook these functions to return whatever they want. These signals
+ *   are useful for triage and UX, but they are NOT a security boundary.
+ *
+ *   The authoritative integrity check is Apple App Attest (`requestAttestation()`),
+ *   verified server-side. Only the App-Attest assertion proves that a genuine,
+ *   unmodified build of THIS app is running on a non-jailbroken Apple device, and
+ *   it cannot be forged on the client. See SECURITY.md.
+ *
+ *   The native checks below require a Capacitor plugin written in Swift (e.g. a
+ *   `NexusIntegrity` plugin). Until that plugin ships, native checks return `false`
+ *   AND `nativeChecksImplemented` is `false`, so the server can tell "verified clean"
+ *   apart from "not yet measured" rather than silently treating an unmeasured device
+ *   as trusted.
+ */
+
+const NATIVE_PLUGIN = 'NexusIntegrity'; // Swift Capacitor plugin (to be implemented)
 
 class SecurityService {
     constructor() {
         this.platform = Capacitor.getPlatform(); // 'web', 'ios', 'android'
     }
 
-    /**
-     * Reconciles native OS permissions required for Integrity checks
-     */
+    get nativeAvailable() {
+        return this.platform === 'ios' && Capacitor.isPluginAvailable(NATIVE_PLUGIN);
+    }
+
     async requestRequiredPermissions() {
-        console.log(`[SecurityService] Requesting diagnostic permissions on platform: ${this.platform}`);
-        if (this.platform !== 'web') {
-            await new Promise(resolve => setTimeout(resolve, 500));
-        }
+        // iOS integrity checks (jailbreak heuristics, App Attest) need no runtime
+        // permission prompts. Kept for API compatibility.
         return true;
     }
 
     /**
-     * Evaluates all 12 layers of device integrity checks.
-     * Note: Server calculates the final trust score. This just collects the raw signals.
+     * Apple App Attest — the ONLY cryptographically sound integrity proof on iOS.
+     * Returns a base64 assertion + keyId that the server verifies against Apple's
+     * attestation servers. Returns null when unavailable (web preview, missing plugin,
+     * or a device that doesn't support App Attest).
+     *
+     * @param {string} challenge - a one-time nonce issued by our server.
+     */
+    async requestAttestation(challenge) {
+        if (!this.nativeAvailable) return null;
+        try {
+            const plugin = Capacitor.Plugins[NATIVE_PLUGIN];
+            // Native side calls DCAppAttestService.generateKey + generateAssertion(challenge).
+            const { keyId, assertion } = await plugin.attest({ challenge });
+            return { keyId, assertion };
+        } catch (e) {
+            console.warn('[SecurityService] App Attest unavailable:', e?.message);
+            return null;
+        }
+    }
+
+    /**
+     * Collects best-effort integrity signals. The server treats these as hints and
+     * computes the authoritative trust score; it must weight App Attest above all of
+     * these booleans.
      */
     async runCompleteDiagnostic() {
-        console.log(`[SecurityService] Running 12-layer diagnostic on platform: ${this.platform}`);
-
         const results = {
-            isRooted: false,              // L1
-            isDevModeActive: false,       // L2
-            isVpnActive: false,           // L3
-            isSideloaded: false,          // L4
-            hasOverlayApps: false,        // L5
-            hasCheatTools: false,         // L6
-            hasVirtualSpace: false,       // L7
-            hasAccessibilityAbuse: false, // L8
-            hasScreenCapture: false,      // L9
-            isEmulator: false,            // L10
-            isClockTampered: false,       // L11
-            isBgmiModified: false,        // L12
+            isRooted: false,              // iOS: jailbreak
+            isDevModeActive: false,
+            isVpnActive: false,
+            isSideloaded: false,
+            hasOverlayApps: false,
+            hasCheatTools: false,
+            hasVirtualSpace: false,
+            hasAccessibilityAbuse: false,
+            hasScreenCapture: false,
+            isEmulator: false,            // iOS: Simulator
+            isClockTampered: false,
+            isBgmiModified: false,
+            nativeChecksImplemented: false,
+            attestationVerified: false,   // set true only after the server verifies App Attest
             issues: []
         };
 
-        if (this.platform === 'web') {
-            // For web preview, we just return clean or randomly simulate based on a mock setting if needed.
-            // For now, return clean diagnostics so development isn't blocked.
+        // VPN is the one signal genuinely observable from JS via Capacitor.
+        results.isVpnActive = await this.checkVPNConnection();
+        if (results.isVpnActive) results.issues.push('VPN_ACTIVE');
+
+        if (!this.nativeAvailable) {
+            // Web preview or no native plugin: we honestly have not measured the device.
             return results;
         }
 
         try {
-            // LAYER 1: ROOT / JAILBREAK (Play Integrity / SafetyNet stub)
-            results.isRooted = await this.checkRootStatus();
-            if (results.isRooted) results.issues.push('ROOT_DETECTED');
+            const plugin = Capacitor.Plugins[NATIVE_PLUGIN];
+            const native = await plugin.runChecks();
 
-            // LAYER 2: DEVELOPER MODE
-            results.isDevModeActive = await this.checkDeveloperMode();
-            if (results.isDevModeActive) results.issues.push('DEV_MODE_ACTIVE');
+            results.isRooted = !!native.isJailbroken;
+            results.isDevModeActive = !!native.isDebuggerAttached;
+            results.isEmulator = !!native.isSimulator;
+            results.isClockTampered = !!native.isClockTampered;
+            results.isBgmiModified = !!native.isAppTampered;       // app signature / bundle check
+            results.hasScreenCapture = !!native.isScreenCaptured;  // UIScreen.isCaptured / mirroring
+            results.nativeChecksImplemented = true;
 
-            // LAYER 3: VPN / PROXY
-            results.isVpnActive = await this.checkVPNConnection();
-            if (results.isVpnActive) results.issues.push('VPN_ACTIVE');
-
-            // LAYER 4: SIDELOADED APP (Install Source)
-            results.isSideloaded = await this.checkInstallSource();
-            if (results.isSideloaded) results.issues.push('SIDELOADED_APP');
-
-            // LAYER 5: SCREEN OVERLAYS (ESP)
-            results.hasOverlayApps = await this.checkOverlays();
-            if (results.hasOverlayApps) results.issues.push('OVERLAYS_DETECTED');
-
-            // LAYER 6: CHEAT TOOLS (Game Guardian, SB Hacker, etc)
-            results.hasCheatTools = await this.checkCheatTools();
-            if (results.hasCheatTools) results.issues.push('CHEAT_TOOLS_FOUND');
-
-            // LAYER 7: VIRTUAL SPACE (Parallel Space, Dual Space)
-            results.hasVirtualSpace = await this.checkVirtualSpace();
-            if (results.hasVirtualSpace) results.issues.push('VIRTUAL_SPACE_DETECTED');
-
-            // LAYER 8: ACCESSIBILITY ABUSE (Aimbots, Macros)
-            results.hasAccessibilityAbuse = await this.checkAccessibilityAbuse();
-            if (results.hasAccessibilityAbuse) results.issues.push('ACCESSIBILITY_ABUSE');
-
-            // LAYER 9: SCREEN CAPTURE (Mirroring ESP)
-            results.hasScreenCapture = await this.checkScreenCapture();
-            if (results.hasScreenCapture) results.issues.push('SCREEN_CAPTURE_ACTIVE');
-
-            // LAYER 10: EMULATOR (BlueStacks, Nox)
-            results.isEmulator = await this.checkEmulator();
-            if (results.isEmulator) results.issues.push('EMULATOR_ENVIRONMENT');
-
-            // LAYER 11: CLOCK TAMPERING (Speed hacks)
-            results.isClockTampered = await this.checkClockTampering();
+            if (results.isRooted) results.issues.push('JAILBREAK_DETECTED');
+            if (results.isDevModeActive) results.issues.push('DEBUGGER_ATTACHED');
+            if (results.isEmulator) results.issues.push('SIMULATOR_ENVIRONMENT');
             if (results.isClockTampered) results.issues.push('CLOCK_TAMPERED');
-
-            // LAYER 12: BGMI APK INTEGRITY (Repackaged APK)
-            results.isBgmiModified = await this.checkBgmiIntegrity();
-            if (results.isBgmiModified) results.issues.push('BGMI_APK_MODIFIED');
-
+            if (results.isBgmiModified) results.issues.push('APP_TAMPERED');
+            if (results.hasScreenCapture) results.issues.push('SCREEN_CAPTURE_ACTIVE');
         } catch (e) {
-            console.error('[SecurityService] Diagnostic check failed layer:', e);
-            // We do not fail the whole check if one layer throws, to prevent breaking the app.
+            console.error('[SecurityService] Native diagnostic failed:', e);
+            // Leave nativeChecksImplemented = false so the server knows this device is unmeasured.
         }
 
         return results;
     }
 
-    // --- 12 LAYER IMPLEMENTATION STUBS ---
-    // In a real production build, these would call native Capacitor plugins that execute Java/Swift code.
-
-    async checkRootStatus() {
-        return false; // Stub
+    /**
+     * Classifies how THIS app was installed, so the server can reject a TestFlight /
+     * sideloaded copy of the integrity client. On iOS the native side inspects the
+     * App Store receipt name ("sandboxReceipt" => TestFlight/sandbox) and checks for
+     * sideload/enterprise signing. Returns one of:
+     *   'app_store' | 'testflight' | 'sandbox' | 'sideloaded' | 'enterprise' | 'unknown'
+     */
+    async getInstallSource() {
+        if (!this.nativeAvailable) return 'unknown';
+        try {
+            const plugin = Capacitor.Plugins[NATIVE_PLUGIN];
+            const { installSource } = await plugin.getInstallSource();
+            return installSource || 'unknown';
+        } catch (e) {
+            return 'unknown';
+        }
     }
 
-    async checkDeveloperMode() {
-        return false; // Stub
+    /**
+     * Full device verification handshake. Caller provides an `api` client.
+     * Returns the server-computed tier ('UNVERIFIED' | 'ATTESTED' | 'MANAGED').
+     */
+    async verifyDevice(api, diagnostics) {
+        try {
+            const { data } = await api.post('/attest/challenge');
+            const att = await this.requestAttestation(data.challenge);
+            const installSource = await this.getInstallSource();
+            const jailbroken = !!diagnostics?.isRooted;
+
+            const res = await api.post('/attest/verify', {
+                keyId: att?.keyId,
+                assertion: att?.assertion,
+                challenge: data.challenge,
+                installSource,
+                jailbroken,
+            });
+            return res.data.tier;
+        } catch (e) {
+            // 403 with a tier still tells us the verification result.
+            return e?.response?.data?.tier || 'UNVERIFIED';
+        }
     }
 
     async checkVPNConnection() {
@@ -126,47 +168,6 @@ class SecurityService {
         } catch (e) {
             return false;
         }
-    }
-
-    async checkInstallSource() {
-        return false; // Stub
-    }
-
-    async checkOverlays() {
-        return false; // Stub
-    }
-
-    async checkCheatTools() {
-        // e.g. check for 'catch_.me_.if_.you_.can_' or 'com.topjohnwu.magisk'
-        return false; // Stub
-    }
-
-    async checkVirtualSpace() {
-        // e.g. check for 'com.lbe.parallel.intl' or UID anomalies
-        return false; // Stub
-    }
-
-    async checkAccessibilityAbuse() {
-        return false; // Stub
-    }
-
-    async checkScreenCapture() {
-        return false; // Stub
-    }
-
-    async checkEmulator() {
-        // e.g. check Build.FINGERPRINT, Build.MODEL
-        return false; // Stub
-    }
-
-    async checkClockTampering() {
-        // Compare elapsedRealtime with currentTimeMillis
-        return false; // Stub
-    }
-
-    async checkBgmiIntegrity() {
-        // Verify 'com.pubg.imobile' package signature
-        return false; // Stub
     }
 }
 

@@ -150,8 +150,7 @@ export default function LoginGateway({ onLogin }) {
                         <ArrowLeft size={16} /> Back
                     </button>
                     <h2 style={{ textAlign: 'center', marginBottom: '2rem' }}>Manager Portal Login</h2>
-                    <p className="text-muted" style={{ fontSize: '0.8rem', textAlign: 'center', marginBottom: '1.5rem' }}>Hint: Use `admin` / `admin` to access the portal.</p>
-                    
+
                     <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>Username</label>
                     <input autoFocus required value={managerUser} onChange={(e)=>setManagerUser(e.target.value)} type="text" style={{ padding: '12px', marginBottom: '1.5rem', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', color: 'white', borderRadius: '4px' }} />
 

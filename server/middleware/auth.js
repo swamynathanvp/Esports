@@ -1,7 +1,5 @@
-import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'nexus_super_secret_key_2024';
+import { verifyToken } from '../securityKit.js';
 
 export const auth = async (req, res, next) => {
     try {
@@ -11,8 +9,8 @@ export const auth = async (req, res, next) => {
         }
 
         const token = authHeader.split(' ')[1];
-        const decoded = jwt.verify(token, JWT_SECRET);
-        
+        const decoded = verifyToken(token);
+
         if (decoded.role === 'MANAGER') {
             req.user = decoded;
             return next();
@@ -24,9 +22,9 @@ export const auth = async (req, res, next) => {
         }
 
         if (user.activeSessionId !== decoded.sessionId) {
-            return res.status(401).json({ 
-                error: 'SESSION_EXPIRED', 
-                message: 'Your session was terminated because your account was accessed from another device.' 
+            return res.status(401).json({
+                error: 'SESSION_EXPIRED',
+                message: 'Your session was terminated because your account was accessed from another device.'
             });
         }
 
@@ -47,3 +45,20 @@ export const managerOnly = (req, res, next) => {
         res.status(403).json({ error: 'Manager access required' });
     }
 };
+
+// Verifies a JWT presented over a WebSocket connection and resolves the real,
+// server-trusted identity (never trust client-supplied username/role/hardwareId).
+// Returns { user, decoded } on success, or throws.
+export async function authenticateSocketToken(token) {
+    const decoded = verifyToken(token);
+
+    if (decoded.role === 'MANAGER') {
+        return { user: null, decoded };
+    }
+
+    const user = await User.findById(decoded.id);
+    if (!user) throw new Error('User not found');
+    if (user.activeSessionId !== decoded.sessionId) throw new Error('SESSION_EXPIRED');
+
+    return { user, decoded };
+}

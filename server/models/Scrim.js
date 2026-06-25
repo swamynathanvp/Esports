@@ -30,6 +30,13 @@ const ScrimSchema = new mongoose.Schema({
     isActive: {
         type: Boolean,
         default: true
+    },
+    // Minimum device verification tier required to receive this scrim's credentials.
+    // Prize / official matches should require MANAGED (MDM-supervised device).
+    minVerificationTier: {
+        type: String,
+        enum: ['UNVERIFIED', 'ATTESTED', 'MANAGED'],
+        default: 'ATTESTED'
     }
 }, { timestamps: true });
 

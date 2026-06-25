@@ -1,20 +1,30 @@
 import express from 'express';
 import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import User from '../models/User.js';
 import InviteCode from '../models/InviteCode.js';
+import { signToken, asString, rateLimit } from '../securityKit.js';
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'nexus_super_secret_key_2024';
+
+// Brute-force / credential-stuffing protection on every credential-accepting route.
+const authLimiter = rateLimit({ windowMs: 15 * 60_000, max: 20, bucket: 'auth' });
+
+const MIN_PASSWORD_LENGTH = 8;
 
 // [Player Client] 1. Device Registration / Sign Up
-router.post('/register-device', async (req, res) => {
+router.post('/register-device', authLimiter, async (req, res) => {
     try {
-        const { username, password, inviteCode, deviceInfo } = req.body;
-        
+        const username = asString(req.body?.username, { max: 64 });
+        const password = asString(req.body?.password, { max: 200 });
+        const inviteCode = asString(req.body?.inviteCode, { max: 64 });
+        const deviceInfo = req.body?.deviceInfo;
+
         if (!username || !password || !inviteCode) {
             return res.status(400).json({ error: 'Username, password, and invite code are required' });
+        }
+        if (password.length < MIN_PASSWORD_LENGTH) {
+            return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
         }
 
         const codeDoc = await InviteCode.findOne({ code: inviteCode, isActive: true });
@@ -33,9 +43,9 @@ router.post('/register-device', async (req, res) => {
         let role = 'INVITED';
         if (codeDoc.type === 'CLAN') role = 'RECRUIT';
         if (codeDoc.type === 'OFFICIAL') role = 'OFFICIAL';
-        
+
         const sessionId = crypto.randomUUID();
-        const hwId = deviceInfo?.hardwareId || 'unknown_hwid';
+        const hwId = asString(deviceInfo?.hardwareId, { max: 128 }) || 'unknown_hwid';
 
         const user = new User({
             username,
@@ -47,8 +57,8 @@ router.post('/register-device', async (req, res) => {
             activeSessionId: sessionId,
             deviceHistory: [{
                 hardwareId: hwId,
-                deviceModel: deviceInfo?.deviceModel || 'Unknown',
-                platform: deviceInfo?.platform || 'web',
+                deviceModel: asString(deviceInfo?.deviceModel, { max: 128 }) || 'Unknown',
+                platform: asString(deviceInfo?.platform, { max: 32 }) || 'web',
                 loginAt: new Date(),
                 ipAddress: req.ip,
                 isCurrentDevice: true
@@ -62,23 +72,26 @@ router.post('/register-device', async (req, res) => {
         codeDoc.isActive = false;
         await codeDoc.save();
 
-        const token = jwt.sign({ id: user._id, username: user.username, role: user.role, sessionId }, JWT_SECRET, { expiresIn: '30d' });
+        const token = signToken({ id: user._id, username: user.username, role: user.role, sessionId }, { expiresIn: '30d' });
 
-        res.status(201).json({ 
-            message: 'Registration successful', 
-            token, 
-            user: { id: user._id, username: user.username, role: user.role, trustScore: user.trustScore, sessionId } 
+        res.status(201).json({
+            message: 'Registration successful',
+            token,
+            user: { id: user._id, username: user.username, role: user.role, trustScore: user.trustScore, sessionId }
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[register-device]', error);
+        res.status(500).json({ error: 'Registration failed' });
     }
 });
 
 // [Player Client] 2. Player Login
-router.post('/player-login', async (req, res) => {
+router.post('/player-login', authLimiter, async (req, res) => {
     try {
-        const { username, password, deviceInfo } = req.body;
-        
+        const username = asString(req.body?.username, { max: 64 });
+        const password = asString(req.body?.password, { max: 200 });
+        const deviceInfo = req.body?.deviceInfo;
+
         if (!username || !password) {
             return res.status(400).json({ error: 'Username and password are required' });
         }
@@ -94,7 +107,7 @@ router.post('/player-login', async (req, res) => {
         }
 
         const sessionId = crypto.randomUUID();
-        const hwId = deviceInfo?.hardwareId || 'unknown_hwid';
+        const hwId = asString(deviceInfo?.hardwareId, { max: 128 }) || 'unknown_hwid';
 
         // Mark previous devices as not current
         user.deviceHistory.forEach(d => {
@@ -104,8 +117,8 @@ router.post('/player-login', async (req, res) => {
 
         user.deviceHistory.push({
             hardwareId: hwId,
-            deviceModel: deviceInfo?.deviceModel || 'Unknown',
-            platform: deviceInfo?.platform || 'web',
+            deviceModel: asString(deviceInfo?.deviceModel, { max: 128 }) || 'Unknown',
+            platform: asString(deviceInfo?.platform, { max: 32 }) || 'web',
             loginAt: new Date(),
             ipAddress: req.ip,
             isCurrentDevice: true
@@ -115,31 +128,52 @@ router.post('/player-login', async (req, res) => {
         user.activeSessionId = sessionId;
         await user.save();
 
-        const token = jwt.sign({ id: user._id, username: user.username, role: user.role, sessionId }, JWT_SECRET, { expiresIn: '30d' });
+        const token = signToken({ id: user._id, username: user.username, role: user.role, sessionId }, { expiresIn: '30d' });
 
-        res.status(200).json({ 
-            message: 'Login successful', 
-            token, 
-            user: { id: user._id, username: user.username, role: user.role, trustScore: user.trustScore, sessionId } 
+        res.status(200).json({
+            message: 'Login successful',
+            token,
+            user: { id: user._id, username: user.username, role: user.role, trustScore: user.trustScore, sessionId }
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[player-login]', error);
+        res.status(500).json({ error: 'Login failed' });
     }
 });
 
-// [Manager Client] 3. Manager Login
-router.post('/manager-login', async (req, res) => {
+// [Manager Client] 3. Manager Login — credentials come from the environment.
+// Set MANAGER_USERNAME and MANAGER_PASSWORD_HASH (a bcrypt hash) in server/.env.
+const MANAGER_USERNAME = process.env.MANAGER_USERNAME || 'admin';
+const MANAGER_PASSWORD_HASH = process.env.MANAGER_PASSWORD_HASH || '';
+
+if (!MANAGER_PASSWORD_HASH && process.env.NODE_ENV !== 'production') {
+    console.warn('[SECURITY WARNING] MANAGER_PASSWORD_HASH not set — falling back to dev password "admin". Set a bcrypt hash in server/.env.');
+}
+
+router.post('/manager-login', authLimiter, async (req, res) => {
     try {
-        const { username, password } = req.body;
-        // Mocking authentication for the prototype phase
-        if (username === 'admin' && password === 'admin') {
+        const username = asString(req.body?.username, { max: 64 });
+        const password = asString(req.body?.password, { max: 200 });
+
+        if (!username || !password) {
+            return res.status(401).json({ error: 'Invalid Manager Credentials' });
+        }
+
+        const userMatches = username === MANAGER_USERNAME;
+        const passwordMatches = MANAGER_PASSWORD_HASH
+            ? await bcrypt.compare(password, MANAGER_PASSWORD_HASH)
+            : (process.env.NODE_ENV !== 'production' && password === 'admin'); // dev-only fallback
+
+        if (userMatches && passwordMatches) {
             const sessionId = crypto.randomUUID();
-            const token = jwt.sign({ role: 'MANAGER', sessionId }, JWT_SECRET, { expiresIn: '1d' });
+            const token = signToken({ role: 'MANAGER', sessionId }, { expiresIn: '1d' });
             return res.status(200).json({ message: 'Manager verified', token });
         }
+
         res.status(401).json({ error: 'Invalid Manager Credentials' });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[manager-login]', error);
+        res.status(500).json({ error: 'Login failed' });
     }
 });
 
