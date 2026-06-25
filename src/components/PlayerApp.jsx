@@ -34,15 +34,12 @@ export default function PlayerApp({ onLogout }) {
             // 3. Connect to the Command Server via WebSockets
             socket = io('http://localhost:5000');
             setSocketInstance(socket);
-            const identifier = localStorage.getItem('nexus_hwid') || 'unknown';
 
-            // 4. Authenticate Socket with Hardware ID and Session ID
-            socket.emit('authenticate', { 
-                hardwareId: identifier, 
-                role: playerProfile.role || playerProfile.type, 
-                username: playerProfile.username || playerProfile.name,
-                sessionId: playerProfile.sessionId 
-            });
+            // 4. Authenticate the socket with the signed JWT only. The server
+            //    derives identity (user, role, hardware) from the token — the client
+            //    can no longer claim to be another user or another device.
+            const token = localStorage.getItem('nexus_token');
+            socket.emit('authenticate', { token });
 
             socket.on('auth_error', (data) => {
                 alert(data.message);
@@ -62,8 +59,8 @@ export default function PlayerApp({ onLogout }) {
                 }, 30000);
             });
 
-            socket.on('scrim_created', () => {
-                // Auto-refresh when manager creates a scrim
+            socket.on('scrims_updated', () => {
+                // Auto-refresh when a manager creates/updates/pushes a scrim.
                 fetchScrims();
             });
         };
@@ -79,19 +76,38 @@ export default function PlayerApp({ onLogout }) {
     const fetchScrims = async () => {
         try {
             const res = await api.get('/scrims/upcoming');
-            const formattedScrims = res.data.map(s => {
+            const formattedScrims = await Promise.all(res.data.map(async (s) => {
                 const releaseTime = new Date(s.releaseSchedule[0]?.releaseTime || Date.now());
-                const isUnlocked = releaseTime < new Date(); 
+                const isUnlocked = releaseTime < new Date();
+
+                let roomId = isUnlocked ? 'Hidden' : 'Hidden';
+                let password = isUnlocked ? 'Hidden' : 'Hidden';
+
+                // Credentials are released by the server only if we're eligible
+                // (assigned + released + trust score 100). The client cannot force this.
+                if (isUnlocked) {
+                    try {
+                        const credRes = await api.get(`/scrims/credentials/${s._id}`);
+                        roomId = credRes.data.roomId || 'Pending push';
+                        password = credRes.data.password || 'Pending push';
+                    } catch (credErr) {
+                        const reason = credErr.response?.data?.error;
+                        roomId = password = reason === 'INTEGRITY_BLOCK' ? 'Integrity blocked'
+                            : reason === 'PENDING' ? 'Pending push'
+                            : 'Locked';
+                    }
+                }
+
                 return {
                     id: s._id,
                     name: s.title,
                     time: releaseTime.toLocaleString(),
-                    isUnlocked: isUnlocked,
-                    roomId: isUnlocked ? "Awaiting Socket Push..." : "Hidden", 
-                    password: isUnlocked ? "Awaiting Socket Push..." : "Hidden",
+                    isUnlocked,
+                    roomId,
+                    password,
                     status: isUnlocked ? "Unlocked" : "Scheduled"
                 };
-            });
+            }));
             setScrims(formattedScrims);
         } catch (err) {
             console.error("Failed fetching live scrims:", err);

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
@@ -9,18 +10,23 @@ import userRoutes from './routes/users.js';
 import teamRoutes from './routes/teams.js';
 import inviteRoutes from './routes/invites.js';
 import User from './models/User.js';
+import { authenticateSocketToken } from './middleware/auth.js';
+import { securityHeaders, buildCorsOptions, ALLOWED_ORIGINS } from './securityKit.js';
+import { computeTrustScore as scoreOf } from './trustScore.js';
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*", // Allow Vite local dev requests
+        origin: ALLOWED_ORIGINS,
         methods: ["GET", "POST"]
     }
 });
 
-app.use(cors());
-app.use(express.json());
+app.set('trust proxy', 1); // so req.ip reflects the real client behind a proxy/load balancer
+app.use(securityHeaders);
+app.use(cors(buildCorsOptions()));
+app.use(express.json({ limit: '64kb' })); // cap body size to blunt payload-based DoS
 
 // Make io accessible in routes
 app.set('io', io);
@@ -31,12 +37,10 @@ app.use('/api/users', userRoutes);
 app.use('/api/teams', teamRoutes);
 app.use('/api/invites', inviteRoutes);
 
-// In-Memory map to track WebSocket connections
-const connectedClients = new Map();
-
 // Actual MongoDB Connection
-mongoose.connect('mongodb://localhost:27017/esports-nexus', { serverSelectionTimeoutMS: 5000 })
-    .then(() => console.log('[\u2713] MongoDB Connected to esports-nexus (Ready for Players)'))
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/esports-nexus';
+mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 5000 })
+    .then(() => console.log('[✓] MongoDB Connected to esports-nexus (Ready for Players)'))
     .catch(err => {
         console.error('\n==== CRITICAL DATABASE ERROR ====');
         console.error('The Node.js server could not connect to MongoDB on port 27017.');
@@ -47,65 +51,63 @@ mongoose.connect('mongodb://localhost:27017/esports-nexus', { serverSelectionTim
 io.on('connection', (socket) => {
     console.log(`[+] Client Connected: ${socket.id}`);
 
-    // Authenticate the socket and check session validity
-    socket.on('authenticate', async (data) => {
-        const { hardwareId, role, username, sessionId } = data;
-        
-        try {
-            // Validate the session exists and matches
-            if (username && sessionId) {
-                const user = await User.findOne({ username });
-                if (user && user.activeSessionId !== sessionId) {
-                    socket.emit('auth_error', { message: 'Session expired. Account accessed from another device.' });
-                    return socket.disconnect();
-                }
-            }
-            
-            connectedClients.set(socket.id, { hardwareId, role, username });
-            console.log(`[Auth] HardwareID: ${hardwareId} identified as ${role || 'UNKNOWN'}`);
+    // The socket is untrusted until it presents a valid JWT. We never trust
+    // client-supplied username/role/hardwareId — those are derived from the token.
+    socket.data.authed = false;
 
+    socket.on('authenticate', async (data) => {
+        try {
+            const token = data?.token;
+            if (!token) {
+                socket.emit('auth_error', { message: 'Authentication token required.' });
+                return socket.disconnect();
+            }
+
+            const { user, decoded } = await authenticateSocketToken(token);
+
+            socket.data.authed = true;
+            socket.data.isManager = decoded.role === 'MANAGER';
+            socket.data.userId = user ? user._id.toString() : null;
+            socket.data.hardwareId = user ? user.hardwareId : null; // server-trusted, from DB
+            socket.data.role = decoded.role;
+            socket.data.username = user ? user.username : 'manager';
+
+            // Each user joins a private room so we can target messages to exactly them.
+            if (user) socket.join(`user:${user._id}`);
+
+            console.log(`[Auth] Socket ${socket.id} authenticated as ${socket.data.username} (${socket.data.role})`);
             socket.emit('auth_success', { message: 'Secure WebSocket channel established.' });
         } catch (error) {
-            console.error('[Auth Error]', error);
+            const message = error.message === 'SESSION_EXPIRED'
+                ? 'Session expired. Account accessed from another device.'
+                : 'Authentication failed.';
+            socket.emit('auth_error', { message });
+            socket.disconnect();
         }
     });
 
-    // Handle the continuous diagnostics heartbeat
+    // Continuous diagnostics heartbeat — only accepted from an authenticated player
+    // socket, and ALWAYS applied to that socket's own user. A client can no longer
+    // target another player's record or spoof its identity.
     socket.on('integrity_heartbeat', async (diagnostics) => {
-        const clientInfo = connectedClients.get(socket.id);
-        if (!clientInfo || !clientInfo.hardwareId) return;
+        if (!socket.data.authed || !socket.data.userId) return; // ignore unauthenticated/manager
+        if (!diagnostics || typeof diagnostics !== 'object') return;
 
-        console.log(`[Heartbeat] ${clientInfo.hardwareId}:`, diagnostics);
-        
         try {
-            // Find user by hardwareId (for current active session)
-            const user = await User.findOne({ hardwareId: clientInfo.hardwareId });
-            if (user) {
-                user.securityDiagnostics = {
-                    ...user.securityDiagnostics,
-                    ...diagnostics,
-                    lastHeartbeat: new Date()
-                };
+            const user = await User.findById(socket.data.userId);
+            if (!user) return;
 
-                // Calculate Trust Score based on 12-layer research
-                let score = 100;
-                if (diagnostics.isBgmiModified || diagnostics.hasCheatTools) score = 0; // Instant ban
-                else {
-                    if (diagnostics.isRooted) score -= 50;
-                    if (diagnostics.hasVirtualSpace) score -= 80;
-                    if (diagnostics.isEmulator) score -= 60;
-                    if (diagnostics.isSideloaded) score -= 40;
-                    if (diagnostics.hasAccessibilityAbuse) score -= 40;
-                    if (diagnostics.isClockTampered) score -= 30;
-                    if (diagnostics.hasOverlayApps) score -= 30;
-                    if (diagnostics.hasScreenCapture) score -= 25;
-                    if (diagnostics.isDevModeActive) score -= 20;
-                    if (diagnostics.isVpnActive) score -= 15;
-                }
-                
-                user.trustScore = Math.max(0, score);
-                await user.save();
-            }
+            user.securityDiagnostics = {
+                ...(user.securityDiagnostics?.toObject?.() ?? user.securityDiagnostics),
+                ...sanitizeDiagnostics(diagnostics),
+                lastHeartbeat: new Date()
+            };
+
+            // Trust scoring is computed server-side from the (untrusted) signals.
+            // NOTE: client-reported signals are HINTS only. Authoritative integrity
+            // must come from Apple App Attest verification (see SECURITY.md).
+            user.trustScore = scoreOf(user.securityDiagnostics);
+            await user.save();
         } catch (error) {
             console.error('[Heartbeat Error]', error);
         }
@@ -113,9 +115,24 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         console.log(`[-] Client Disconnected: ${socket.id}`);
-        connectedClients.delete(socket.id);
     });
 });
+
+// Only persist the known boolean diagnostic fields; never let a client write
+// arbitrary keys into the document.
+const DIAGNOSTIC_KEYS = [
+    'isRooted', 'isSideloaded', 'isVpnActive', 'isDevModeActive', 'hasCheatTools',
+    'hasVirtualSpace', 'hasAccessibilityAbuse', 'hasScreenCapture', 'isEmulator',
+    'isClockTampered', 'isBgmiModified', 'hasOverlayApps'
+];
+
+function sanitizeDiagnostics(input) {
+    const out = {};
+    for (const key of DIAGNOSTIC_KEYS) {
+        out[key] = input[key] === true; // coerce to strict boolean
+    }
+    return out;
+}
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
