@@ -1,6 +1,7 @@
 import express from 'express';
 import Scrim from '../models/Scrim.js';
 import { auth, managerOnly } from '../middleware/auth.js';
+import { tierAtLeast } from '../deviceVerification.js';
 
 const router = express.Router();
 
@@ -136,6 +137,22 @@ router.get('/credentials/:id', auth, async (req, res) => {
             }
             if ((req.user.trustScore ?? 0) < 100) {
                 return res.status(403).json({ error: 'INTEGRITY_BLOCK', message: 'Resolve device integrity flags to unlock credentials.' });
+            }
+
+            // Device-verification tier gate. This is the enforceable defense against
+            // TestFlight/sideloaded cheat builds: a prize scrim can require a
+            // MANAGED (MDM-supervised) device whose game is verified App Store.
+            const required = scrim.minVerificationTier || 'ATTESTED';
+            const actual = req.user.deviceVerification?.tier || 'UNVERIFIED';
+            if (!tierAtLeast(actual, required)) {
+                return res.status(403).json({
+                    error: 'VERIFICATION_TIER_TOO_LOW',
+                    message: required === 'MANAGED'
+                        ? 'This match requires an MDM-managed device with a verified App Store game install.'
+                        : 'Verify your device (App Attest) from the official App Store build to unlock credentials.',
+                    requiredTier: required,
+                    actualTier: actual,
+                });
             }
         }
 

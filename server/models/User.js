@@ -52,6 +52,22 @@ const UserSchema = new mongoose.Schema({
         ref: 'Team',
         default: null
     },
+    // Server-trusted device verification state (set by the attestation/MDM flow,
+    // never written directly by the client). Drives credential access tiers.
+    deviceVerification: {
+        attestationVerified: { type: Boolean, default: false },
+        attestKeyId: { type: String, default: null },
+        // App Store receipt classification of OUR app: app_store | testflight | sandbox | sideloaded | unknown
+        installSource: { type: String, default: 'unknown' },
+        jailbroken: { type: Boolean, default: false },
+        mdmSupervised: { type: Boolean, default: false },
+        // Reported by MDM managed-app inventory: verified_appstore | unverified | flagged
+        gameIntegrity: { type: String, default: 'unverified' },
+        // Cached computed tier: UNVERIFIED | ATTESTED | MANAGED
+        tier: { type: String, default: 'UNVERIFIED' },
+        enforcementOn: { type: Boolean, default: false },
+        lastVerifiedAt: { type: Date, default: null }
+    },
     securityDiagnostics: {
         isRooted: { type: Boolean, default: false },
         isSideloaded: { type: Boolean, default: false },

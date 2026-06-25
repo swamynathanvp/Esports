@@ -9,6 +9,7 @@ import scrimRoutes from './routes/scrims.js';
 import userRoutes from './routes/users.js';
 import teamRoutes from './routes/teams.js';
 import inviteRoutes from './routes/invites.js';
+import attestRoutes from './routes/attestation.js';
 import User from './models/User.js';
 import { authenticateSocketToken } from './middleware/auth.js';
 import { securityHeaders, buildCorsOptions, ALLOWED_ORIGINS } from './securityKit.js';
@@ -36,6 +37,7 @@ app.use('/api/scrims', scrimRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/teams', teamRoutes);
 app.use('/api/invites', inviteRoutes);
+app.use('/api/attest', attestRoutes);
 
 // Actual MongoDB Connection
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/esports-nexus';

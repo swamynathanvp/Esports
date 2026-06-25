@@ -118,6 +118,49 @@ class SecurityService {
         return results;
     }
 
+    /**
+     * Classifies how THIS app was installed, so the server can reject a TestFlight /
+     * sideloaded copy of the integrity client. On iOS the native side inspects the
+     * App Store receipt name ("sandboxReceipt" => TestFlight/sandbox) and checks for
+     * sideload/enterprise signing. Returns one of:
+     *   'app_store' | 'testflight' | 'sandbox' | 'sideloaded' | 'enterprise' | 'unknown'
+     */
+    async getInstallSource() {
+        if (!this.nativeAvailable) return 'unknown';
+        try {
+            const plugin = Capacitor.Plugins[NATIVE_PLUGIN];
+            const { installSource } = await plugin.getInstallSource();
+            return installSource || 'unknown';
+        } catch (e) {
+            return 'unknown';
+        }
+    }
+
+    /**
+     * Full device verification handshake. Caller provides an `api` client.
+     * Returns the server-computed tier ('UNVERIFIED' | 'ATTESTED' | 'MANAGED').
+     */
+    async verifyDevice(api, diagnostics) {
+        try {
+            const { data } = await api.post('/attest/challenge');
+            const att = await this.requestAttestation(data.challenge);
+            const installSource = await this.getInstallSource();
+            const jailbroken = !!diagnostics?.isRooted;
+
+            const res = await api.post('/attest/verify', {
+                keyId: att?.keyId,
+                assertion: att?.assertion,
+                challenge: data.challenge,
+                installSource,
+                jailbroken,
+            });
+            return res.data.tier;
+        } catch (e) {
+            // 403 with a tier still tells us the verification result.
+            return e?.response?.data?.tier || 'UNVERIFIED';
+        }
+    }
+
     async checkVPNConnection() {
         try {
             const status = await Network.getStatus();

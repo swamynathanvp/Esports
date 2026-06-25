@@ -10,6 +10,7 @@ export default function PlayerApp({ onLogout }) {
     const [isScanning, setIsScanning] = useState(true);
     const [scrims, setScrims] = useState([]);
     const [socketInstance, setSocketInstance] = useState(null);
+    const [verificationTier, setVerificationTier] = useState('UNVERIFIED');
 
     // Profile from DB (stored in localStorage during login)
     const storedUser = localStorage.getItem('nexus_user');
@@ -30,6 +31,11 @@ export default function PlayerApp({ onLogout }) {
             const initialResults = await securityService.runCompleteDiagnostic();
             setDiagnostic(initialResults);
             setIsScanning(false);
+
+            // 2b. Verify the device with the server (App Attest + install-source check).
+            //     This is what stops TestFlight/sideloaded cheat builds from earning trust.
+            const tier = await securityService.verifyDevice(api, initialResults);
+            setVerificationTier(tier);
 
             // 3. Connect to the Command Server via WebSockets
             socket = io('http://localhost:5000');
@@ -93,6 +99,7 @@ export default function PlayerApp({ onLogout }) {
                     } catch (credErr) {
                         const reason = credErr.response?.data?.error;
                         roomId = password = reason === 'INTEGRITY_BLOCK' ? 'Integrity blocked'
+                            : reason === 'VERIFICATION_TIER_TOO_LOW' ? 'Device not verified'
                             : reason === 'PENDING' ? 'Pending push'
                             : 'Locked';
                     }
@@ -132,7 +139,14 @@ export default function PlayerApp({ onLogout }) {
                         <span style={{ fontSize: '0.75rem', padding: '4px 10px', background: displayRole === 'OFFICIAL' ? 'var(--accent-cyan)' : 'var(--accent-purple)', color: displayRole === 'OFFICIAL' ? 'var(--bg-primary)' : '#fff', borderRadius: '4px', fontWeight: 'bold' }}>
                             {displayRole}
                         </span>
-                        <span className="text-secondary" style={{ fontSize: '0.85rem' }}>Device Secure</span>
+                        <span style={{
+                            fontSize: '0.75rem', padding: '3px 8px', borderRadius: '4px', fontWeight: 'bold',
+                            border: '1px solid',
+                            color: verificationTier === 'MANAGED' ? 'var(--success)' : verificationTier === 'ATTESTED' ? 'var(--accent-cyan)' : 'var(--accent-crimson)',
+                            borderColor: verificationTier === 'MANAGED' ? 'var(--success)' : verificationTier === 'ATTESTED' ? 'var(--accent-cyan)' : 'var(--accent-crimson)',
+                        }}>
+                            {verificationTier === 'MANAGED' ? 'MANAGED DEVICE' : verificationTier === 'ATTESTED' ? 'ATTESTED' : 'UNVERIFIED'}
+                        </span>
                     </div>
                 </div>
                 <button onClick={onLogout} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.5rem' }}>

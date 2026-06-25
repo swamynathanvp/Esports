@@ -85,6 +85,72 @@ node -e "import('bcrypt').then(b=>b.default.hash('YourStrongPassword',12)).then(
 # Paste both into .env, then start the server.
 ```
 
+## The TestFlight / modified-IPA cheat vector (iOS/iPad)
+
+**The actual hack.** On iPhone/iPad the dominant BGMI/PUBG cheat is not a separate
+"hack app" — it's a **modified build of the game itself** (aimbot / ESP / no-recoil
+compiled into a re-signed IPA), distributed through **TestFlight** or sideloading
+services (eSign, Scarlet, AltStore, enterprise certificates). The player runs the
+tampered game and our genuine app side-by-side on the same device.
+
+**Why we cannot scan for it directly — and why no one can.** Our app is sandboxed by
+iOS. It **cannot** read the game's binary, verify the game's signature, or even list
+installed apps. That is an Apple security guarantee. Any SDK that claims to "detect a
+hacked PUBG" from a normal app on stock iOS is misrepresenting what the OS allows. So
+"scan the device and find the modified game" is impossible from our client on a
+non-supervised device. We have to attack the problem from angles we *can* enforce.
+
+### The three enforceable defenses (implemented here)
+
+1. **App Attest + jailbreak proof.** `DCAppAttestService` proves a genuine, unmodified
+   build of *our* app is running on a *non-jailbroken* device. Most sideload/injection
+   toolchains need a jailbreak or a re-signed environment, so this removes a large class
+   of cheats. The server binds the verified `keyId` and refreshes per sensitive action.
+
+2. **Install-source rejection.** We can prove whether *our own* app is an App Store build
+   vs a **TestFlight / sandbox / sideloaded** build (App Store receipt name +
+   provisioning checks). If the integrity client itself is a TestFlight/sideloaded copy,
+   the server returns `UNTRUSTED_INSTALL_SOURCE` and grants **no** trust — this stops the
+   common trick of shipping a tampered "companion" alongside the cheat game.
+   See `POST /api/attest/verify`.
+
+3. **MDM supervision — the only true 100%.** This is the honest answer to "solve it 100%."
+   For official/prize scrims, require the player's iPad/iPhone to be enrolled as a
+   **supervised** device in the org's MDM (via Apple Business Manager). A supervised
+   device lets the OS itself:
+   - **block TestFlight** and **disallow non-App-Store app installs** (restriction payloads),
+   - report the **exact installed apps + versions** to our backend (managed app inventory),
+     so we confirm the game is the unmodified App Store build (`gameIntegrity: verified_appstore`).
+   The MDM posts this to `POST /api/attest/mdm-report` (shared-secret protected), which sets
+   the device to the **MANAGED** tier.
+
+### Verification tiers (enforced server-side)
+
+| Tier | Meaning | Gets credentials for |
+|------|---------|----------------------|
+| `UNVERIFIED` | No/failed attestation, jailbroken, or TestFlight/sideloaded client | Nothing |
+| `ATTESTED` | App Attest passed + App Store build + not jailbroken | Practice scrims (`minVerificationTier: ATTESTED`) |
+| `MANAGED` | ATTESTED **and** MDM-supervised with a verified App Store game | Official/prize scrims (`minVerificationTier: MANAGED`) |
+
+A scrim's `minVerificationTier` is enforced in `GET /scrims/credentials/:id`. Set prize
+matches to `MANAGED` and a player on a TestFlight/sideloaded/jailbroken device gets
+`VERIFICATION_TIER_TOO_LOW` and never receives the Room ID/password — there is no
+client-side toggle that bypasses it.
+
+### What's needed to finish (requires a Mac + Apple Developer/Business account)
+- Implement the `NexusIntegrity` Swift plugin: `attest()`, `getInstallSource()`
+  (`Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"` ⇒ TestFlight),
+  jailbreak checks.
+- Implement `verifyAgainstAppleRoot()` in `server/deviceVerification.js` (validate the
+  assertion against Apple's App Attest root cert) and set `APP_ATTEST_ENFORCE=true`.
+- Stand up MDM (e.g. Jamf/Mosyle/Apple Business Manager), configure the TestFlight +
+  app-install restrictions and the managed-app-inventory webhook → `/api/attest/mdm-report`.
+
+**Honest bottom line:** tiers `ATTESTED` and below cannot be made TestFlight-proof on
+stock iOS — only **MANAGED (MDM-supervised)** devices give a true guarantee that the game
+is unmodified. For a serious prize circuit, require MANAGED (or provide the tournament
+hardware). That is the real, achievable "100%."
+
 ## Roadmap to tamper-resistant integrity (the real work)
 
 ### 1. App Attest (highest priority — this is the actual anti-cheat)
